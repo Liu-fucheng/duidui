@@ -3,6 +3,8 @@ from discord.ext import commands
 import os
 import re
 import asyncio
+from flask import Flask
+from threading import Thread
 
 # --- Flask Web Server (用于保活) ---
 # 创建一个 Flask 应用实例
