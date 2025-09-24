@@ -64,6 +64,101 @@ class DeleteTicketView(discord.ui.View):
         await asyncio.sleep(5)
         await interaction.channel.delete()
 
+# --- 48小时未创建工单且未审核 自动踢出逻辑 ---
+CHECK_DELAY_SECONDS = 48 * 60 * 60
+_member_check_tasks = {}
+
+async def _member_has_ticket(guild: discord.Guild, member: discord.Member) -> bool:
+    """只有当成员在其ticket频道中实际发过消息时才视为有工单。"""
+    for channel in guild.text_channels:
+        try:
+            if not channel.name.startswith(TICKET_CHANNEL_PREFIX):
+                continue
+            # 查找工单开头的机器人提示并识别被@的开票人
+            is_owner = False
+            async for old_message in channel.history(limit=10, oldest_first=True):
+                if old_message.author.bot and old_message.mentions:
+                    ticket_owner = old_message.mentions[0]
+                    if ticket_owner.id == member.id:
+                        is_owner = True
+                    break
+            if not is_owner:
+                continue
+
+            # 必须成员自己在该频道发过至少一条消息，才算有效工单
+            async for m in channel.history(limit=200, oldest_first=True):
+                if m.author and not m.author.bot and m.author.id == member.id:
+                    return True
+            # 没有成员消息则视为未有效创建工单
+        except Exception:
+            continue
+    return False
+
+async def _kick_if_still_unverified_and_no_ticket(member: discord.Member):
+    guild = member.guild
+    if guild is None:
+        return
+    try:
+        # 重新获取对象，避免缓存造成信息不准
+        member = await guild.fetch_member(member.id)
+    except Exception:
+        return
+
+    verified_role = discord.utils.get(guild.roles, name=VERIFIED_ROLE_NAME)
+    pending_role = discord.utils.get(guild.roles, name=PENDING_ROLE_NAME)
+
+    # 已离开、已审核、或没有待审核角色，均不处理
+    if verified_role and verified_role in member.roles:
+        return
+    if pending_role is None or pending_role not in member.roles:
+        return
+
+    # 已经创建过工单则不处理
+    if await _member_has_ticket(guild, member):
+        return
+
+    # 私信说明并踢出
+    try:
+        dm_text = (
+            "您有一封来自堆堆demo的信：\n\n"
+            "我们非常遗憾地告知您，由于您进入堆堆demo 48h后仍然没有进行审核，出于对服务器发展的考虑（防止男性混入），您已被请离该服务器。\n"
+            "如果您只是没有及时查看消息、上传证明，或者刚搭建酒馆，聊天楼层数较少，我们欢迎您满足要求后随时加入服务器。\n"
+            "以下为本服务器的永久邀请链接：https://discord.com/invite/gtU8UCa22F"
+        )
+        try:
+            await member.send(dm_text)
+        except Exception:
+            pass
+        await member.kick(reason="加入48小时未创建工单且仍为待审核")
+
+        log_channel = bot.get_channel(LOG_CHANNEL_ID)
+        if log_channel:
+            await log_channel.send(f"已踢出成员 {member.mention} ({member})：48小时未审核且未创建工单。")
+    except discord.Forbidden:
+        log_channel = bot.get_channel(LOG_CHANNEL_ID)
+        if log_channel:
+            await log_channel.send(f"⚠️ 权限不足：无法踢出 {member.mention}（需要踢出成员权限且身份层级足够）。")
+    except Exception as e:
+        log_channel = bot.get_channel(LOG_CHANNEL_ID)
+        if log_channel:
+            await log_channel.send(f"处理成员 {member.mention} 时发生错误：{e}")
+
+async def _schedule_member_check(member: discord.Member, delay_seconds: int):
+    # 防重复调度
+    key = (member.guild.id, member.id)
+    if key in _member_check_tasks and not _member_check_tasks[key].done():
+        return
+
+    async def _runner():
+        try:
+            await asyncio.sleep(max(0, delay_seconds))
+            await _kick_if_still_unverified_and_no_ticket(member)
+        finally:
+            _member_check_tasks.pop(key, None)
+
+    task = asyncio.create_task(_runner())
+    _member_check_tasks[key] = task
+
 # --- Bot 事件 ---
 @bot.event
 async def on_ready():
@@ -74,6 +169,32 @@ async def on_ready():
         print(f"成功同步 {len(synced)} 条斜杠命令。")
     except Exception as e:
         print(f"同步命令时发生错误: {e}")
+
+    # 启动时对现有成员做一次排查与调度
+    try:
+        for guild in bot.guilds:
+            pending_role = discord.utils.get(guild.roles, name=PENDING_ROLE_NAME)
+            if pending_role is None:
+                continue
+            for member in guild.members:
+                if pending_role not in member.roles:
+                    continue
+                # 已审核跳过
+                verified_role = discord.utils.get(guild.roles, name=VERIFIED_ROLE_NAME)
+                if verified_role and verified_role in member.roles:
+                    continue
+                # 计算已加入时长
+                if member.joined_at is None:
+                    continue
+                # Discord 的 joined_at 是UTC时间
+                now = discord.utils.utcnow()
+                elapsed = (now - member.joined_at).total_seconds()
+                if elapsed >= CHECK_DELAY_SECONDS:
+                    await _schedule_member_check(member, 0)
+                else:
+                    await _schedule_member_check(member, int(CHECK_DELAY_SECONDS - elapsed))
+    except Exception as e:
+        print(f"启动检查时发生错误: {e}")
 
 # --- 斜杠命令 ---
 @bot.tree.command(name="回顶", description="回到当前帖子或讨论串的顶部")
@@ -96,6 +217,14 @@ async def top(interaction: discord.Interaction):
     # 3. 如果都不是，则发送提示
     else:
         await interaction.response.send_message("这个命令只能在帖子、讨论串里使用哦！", ephemeral=True)
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    try:
+        # 对新成员设置48小时检查
+        await _schedule_member_check(member, CHECK_DELAY_SECONDS)
+    except Exception as e:
+        print(f"为新成员调度检查时发生错误: {e}")
 
 # --- 消息监听与审核逻辑 ---
 @bot.event
