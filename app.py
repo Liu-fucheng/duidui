@@ -32,6 +32,7 @@ PENDING_ROLE_NAME = "待审核"
 TICKET_CHANNEL_PREFIX = "ticket-" 
 LOG_CHANNEL_ID = 1396366170386464768 
 ARCHIVE_CATEGORY_ID = 1386933518034141256
+SUGGESTION_CATEGORY_ID = 1421113336149577808
 
 KICK_KEYWORD = "请离"
 
@@ -205,15 +206,16 @@ class SuggestionView(discord.ui.View):
     @discord.ui.button(label="提交建议", style=discord.ButtonStyle.primary, custom_id="submit_suggestion")
     async def submit_suggestion_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
-            # 生成建议频道名称
-            user_id = interaction.user.id
-            channel_name = f"建议-{user_id}"
-            
-            # 检查是否已存在该用户的建议频道
-            existing_channel = discord.utils.get(interaction.guild.channels, name=channel_name)
-            if existing_channel:
-                await interaction.response.send_message("您已经有一个进行中的建议频道了！", ephemeral=True)
+            # 获取建议分类
+            suggestion_category = interaction.guild.get_channel(SUGGESTION_CATEGORY_ID)
+            if not suggestion_category:
+                await interaction.response.send_message("❌ 错误：找不到建议分类！", ephemeral=True)
                 return
+            
+            # 计算下一个建议编号
+            existing_suggestions = [ch for ch in suggestion_category.channels if ch.name.startswith("建议-")]
+            next_number = len(existing_suggestions) + 1
+            channel_name = f"建议-{next_number:04d}"
             
             # 获取管理组角色
             staff_role = discord.utils.get(interaction.guild.roles, name=STAFF_ROLE_NAME)
@@ -231,6 +233,7 @@ class SuggestionView(discord.ui.View):
             
             suggestion_channel = await interaction.guild.create_text_channel(
                 name=channel_name,
+                category=suggestion_category,
                 overwrites=overwrites,
                 reason=f"用户 {interaction.user} 提交建议"
             )
@@ -240,7 +243,7 @@ class SuggestionView(discord.ui.View):
             await suggestion_channel.send(welcome_message)
             
             # 回复用户
-            await interaction.response.send_message(f"✅ 建议频道已创建：{suggestion_channel.mention}", ephemeral=True)
+            await interaction.response.send_message(f"✅ 建议频道已创建，点击此链接跳转：{suggestion_channel.mention}", ephemeral=True)
             
             # 记录日志
             log_channel = bot.get_channel(LOG_CHANNEL_ID)
@@ -265,14 +268,9 @@ async def announcement(interaction: discord.Interaction, 内容: str):
         view = SuggestionView()
         
         # 发送公告
-        announcement_embed = discord.Embed(
-            title="📢 服务器公告",
-            description=内容,
-            color=0x00ff00
-        )
-        announcement_embed.set_footer(text="点击下方按钮提交您的建议")
+        announcement_text = f"📢 **服务器公告**\n\n{内容}\n\n点击下方按钮提交您的建议"
         
-        await interaction.response.send_message(embed=announcement_embed, view=view)
+        await interaction.response.send_message(announcement_text, view=view)
         
         # 记录日志
         log_channel = bot.get_channel(LOG_CHANNEL_ID)
