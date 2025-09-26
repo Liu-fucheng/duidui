@@ -5,6 +5,8 @@ import re
 import asyncio
 from flask import Flask
 from threading import Thread
+from datetime import datetime, timedelta
+import json
 
 # --- Flask Web Server (用于保活) ---
 # 创建一个 Flask 应用实例
@@ -64,6 +66,117 @@ class DeleteTicketView(discord.ui.View):
         
         await asyncio.sleep(5)
         await interaction.channel.delete()
+
+class DeleteSuggestionView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="删除此频道", style=discord.ButtonStyle.danger, custom_id="delete_suggestion_confirm")
+    async def delete_suggestion_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # 检查权限
+        staff_role = discord.utils.get(interaction.guild.roles, name=STAFF_ROLE_NAME)
+        if not staff_role or staff_role not in interaction.user.roles:
+            await interaction.response.send_message("❌ 权限不足：只有管理组可以删除建议频道！", ephemeral=True)
+            return
+        
+        await interaction.response.send_message("此建议频道即将被删除。")
+        await asyncio.sleep(3)
+        await interaction.channel.delete()
+
+# --- 投票系统 ---
+# 存储活跃的投票
+active_votes = {}
+vote_tasks = {}
+
+class VoteView(discord.ui.View):
+    def __init__(self, vote_id: str, options: list, allowed_role: str, end_time: datetime):
+        super().__init__(timeout=None)
+        self.vote_id = vote_id
+        self.options = options
+        self.allowed_role = allowed_role
+        self.end_time = end_time
+        
+        # 为每个选项创建按钮
+        for i, option in enumerate(options):
+            button = discord.ui.Button(
+                label=f"{i+1}. {option}",
+                style=discord.ButtonStyle.secondary,
+                custom_id=f"vote_{vote_id}_{i}"
+            )
+            button.callback = self.create_vote_callback(i)
+            self.add_item(button)
+    
+    def create_vote_callback(self, option_index):
+        async def vote_callback(interaction: discord.Interaction):
+            # 检查投票是否还在进行
+            if self.vote_id not in active_votes:
+                await interaction.response.send_message("❌ 此投票已结束！", ephemeral=True)
+                return
+            
+            # 检查权限
+            if self.allowed_role != "@everyone":
+                allowed_role = discord.utils.get(interaction.guild.roles, name=self.allowed_role)
+                if not allowed_role or allowed_role not in interaction.user.roles:
+                    await interaction.response.send_message(f"❌ 权限不足：只有 `{self.allowed_role}` 身份组可以参与此投票！", ephemeral=True)
+                    return
+            
+            vote_data = active_votes[self.vote_id]
+            user_id = str(interaction.user.id)
+            
+            # 检查是否已经投票
+            if user_id in vote_data["voters"]:
+                await interaction.response.send_message("❌ 您已经投过票了！", ephemeral=True)
+                return
+            
+            # 记录投票
+            vote_data["votes"][option_index] += 1
+            vote_data["voters"][user_id] = {
+                "option": option_index,
+                "user": str(interaction.user),
+                "time": datetime.now().isoformat()
+            }
+            
+            await interaction.response.send_message(f"✅ 您的投票已记录：{self.options[option_index]}", ephemeral=True)
+        
+        return vote_callback
+
+async def end_vote(vote_id: str, channel_id: int, guild_id: int):
+    """结束投票并公布结果"""
+    try:
+        if vote_id not in active_votes:
+            return
+        
+        vote_data = active_votes[vote_id]
+        guild = bot.get_guild(guild_id)
+        channel = guild.get_channel(channel_id)
+        
+        if not channel:
+            return
+        
+        # 计算结果
+        total_votes = sum(vote_data["votes"])
+        if total_votes == 0:
+            result_text = f"📊 **投票结果：{vote_data['title']}**\n\n❌ 没有人参与投票"
+        else:
+            result_lines = [f"📊 **投票结果：{vote_data['title']}**\n"]
+            result_lines.append(f"总投票数：{total_votes}\n")
+            
+            for i, option in enumerate(vote_data["options"]):
+                votes = vote_data["votes"][i]
+                percentage = (votes / total_votes * 100) if total_votes > 0 else 0
+                result_lines.append(f"{i+1}. **{option}**: {votes}票 ({percentage:.1f}%)")
+            
+            result_text = "\n".join(result_lines)
+        
+        # 发送结果
+        await channel.send(result_text)
+        
+        # 清理数据
+        active_votes.pop(vote_id, None)
+        vote_tasks.pop(vote_id, None)
+        
+    except Exception as e:
+        print(f"结束投票时发生错误: {e}")
 
 # --- 48小时未创建工单且未审核 自动踢出逻辑 ---
 CHECK_DELAY_SECONDS = 48 * 60 * 60
@@ -166,6 +279,7 @@ async def on_ready():
     print(f'机器人已登录，用户名为: {bot.user}')
     bot.add_view(DeleteTicketView())
     bot.add_view(SuggestionView())
+    bot.add_view(DeleteSuggestionView())
     try:
         synced = await bot.tree.sync()
         print(f"成功同步 {len(synced)} 条斜杠命令。")
@@ -240,7 +354,8 @@ class SuggestionView(discord.ui.View):
             
             # 发送欢迎消息
             welcome_message = f"{interaction.user.mention} 您好！这是只有您与管理能看到的私密频道。非常感谢您对堆堆demo的建言献策！您对社区建设有任何的意见或者建议都可以在这个频道内直接表达，管理在上线后会赶到与您进行讨论。{staff_role.mention}"
-            await suggestion_channel.send(welcome_message)
+            delete_view = DeleteSuggestionView()
+            await suggestion_channel.send(welcome_message, view=delete_view)
             
             # 回复用户
             await interaction.response.send_message(f"✅ 建议频道已创建，点击此链接跳转：{suggestion_channel.mention}", ephemeral=True)
@@ -254,6 +369,160 @@ class SuggestionView(discord.ui.View):
             await interaction.response.send_message(f"❌ 创建建议频道时发生错误：{e}", ephemeral=True)
 
 # --- 斜杠命令 ---
+@bot.tree.command(name="投票", description="创建一个新的投票")
+async def create_vote(
+    interaction: discord.Interaction, 
+    投票名称: str,
+    选项: str,
+    结束时间_小时: int,
+    投票身份组: str = "@everyone"
+):
+    """创建投票
+    
+    参数:
+    - 投票名称: 投票的标题
+    - 选项: 用逗号分隔的选项，例如：选项1,选项2,选项3
+    - 结束时间_小时: 投票持续多少小时
+    - 投票身份组: 哪个身份组可以投票，默认所有人
+    """
+    try:
+        # 检查权限
+        staff_role = discord.utils.get(interaction.guild.roles, name=STAFF_ROLE_NAME)
+        if not staff_role or staff_role not in interaction.user.roles:
+            await interaction.response.send_message("❌ 权限不足：只有管理组可以创建投票！", ephemeral=True)
+            return
+        
+        # 解析选项
+        options = [opt.strip() for opt in 选项.split(',') if opt.strip()]
+        if len(options) < 2:
+            await interaction.response.send_message("❌ 至少需要2个选项！请用逗号分隔选项。", ephemeral=True)
+            return
+        
+        if len(options) > 10:
+            await interaction.response.send_message("❌ 最多只能有10个选项！", ephemeral=True)
+            return
+        
+        # 检查身份组
+        if 投票身份组 != "@everyone":
+            role = discord.utils.get(interaction.guild.roles, name=投票身份组)
+            if not role:
+                await interaction.response.send_message(f"❌ 找不到身份组：{投票身份组}", ephemeral=True)
+                return
+        
+        # 计算结束时间
+        if 结束时间_小时 < 1 or 结束时间_小时 > 168:  # 最多7天
+            await interaction.response.send_message("❌ 结束时间必须在1-168小时之间！", ephemeral=True)
+            return
+        
+        end_time = datetime.now() + timedelta(hours=结束时间_小时)
+        vote_id = f"{interaction.guild.id}_{interaction.channel.id}_{int(datetime.now().timestamp())}"
+        
+        # 存储投票数据
+        active_votes[vote_id] = {
+            "title": 投票名称,
+            "options": options,
+            "votes": [0] * len(options),
+            "voters": {},
+            "allowed_role": 投票身份组,
+            "creator": str(interaction.user),
+            "channel_id": interaction.channel.id,
+            "guild_id": interaction.guild.id,
+            "end_time": end_time.isoformat()
+        }
+        
+        # 创建投票视图
+        vote_view = VoteView(vote_id, options, 投票身份组, end_time)
+        
+        # 创建投票消息
+        vote_text = f"🗳️ **{投票名称}**\n\n"
+        vote_text += f"⏰ 结束时间：<t:{int(end_time.timestamp())}:F>\n"
+        vote_text += f"👥 可投票身份组：{投票身份组}\n\n"
+        vote_text += "请点击下方按钮进行投票："
+        
+        await interaction.response.send_message(vote_text, view=vote_view)
+        
+        # 安排结束任务
+        async def end_vote_task():
+            await asyncio.sleep(结束时间_小时 * 3600)
+            await end_vote(vote_id, interaction.channel.id, interaction.guild.id)
+        
+        task = asyncio.create_task(end_vote_task())
+        vote_tasks[vote_id] = task
+        
+        # 记录日志
+        log_channel = bot.get_channel(LOG_CHANNEL_ID)
+        if log_channel:
+            await log_channel.send(f"{interaction.user.mention} 创建了投票：{投票名称}")
+            
+    except Exception as e:
+        await interaction.response.send_message(f"❌ 创建投票时发生错误：{e}", ephemeral=True)
+
+@bot.tree.command(name="投票状态", description="查看投票的实时状态（仅管理可用）")
+async def vote_status(interaction: discord.Interaction, 投票编号: str = None):
+    """查看投票状态"""
+    try:
+        # 检查权限
+        staff_role = discord.utils.get(interaction.guild.roles, name=STAFF_ROLE_NAME)
+        if not staff_role or staff_role not in interaction.user.roles:
+            await interaction.response.send_message("❌ 权限不足：只有管理组可以查看投票状态！", ephemeral=True)
+            return
+        
+        if not active_votes:
+            await interaction.response.send_message("❌ 当前没有进行中的投票！", ephemeral=True)
+            return
+        
+        # 如果没有指定投票编号，显示所有投票
+        if not 投票编号:
+            vote_list = []
+            for vid, vdata in active_votes.items():
+                if vdata["guild_id"] == interaction.guild.id:
+                    end_time = datetime.fromisoformat(vdata["end_time"])
+                    vote_list.append(f"• {vdata['title']} (ID: {vid[-10:]})")
+            
+            if not vote_list:
+                await interaction.response.send_message("❌ 此服务器没有进行中的投票！", ephemeral=True)
+                return
+            
+            list_text = "📊 **当前投票列表：**\n\n" + "\n".join(vote_list)
+            list_text += "\n\n使用 `/投票状态 投票编号` 查看详细状态"
+            await interaction.response.send_message(list_text, ephemeral=True)
+            return
+        
+        # 查找指定投票
+        target_vote = None
+        for vid, vdata in active_votes.items():
+            if vid.endswith(投票编号) and vdata["guild_id"] == interaction.guild.id:
+                target_vote = (vid, vdata)
+                break
+        
+        if not target_vote:
+            await interaction.response.send_message(f"❌ 找不到投票编号：{投票编号}", ephemeral=True)
+            return
+        
+        vid, vdata = target_vote
+        total_votes = sum(vdata["votes"])
+        
+        status_text = f"📊 **投票状态：{vdata['title']}**\n\n"
+        status_text += f"总投票数：{total_votes}\n"
+        status_text += f"结束时间：<t:{int(datetime.fromisoformat(vdata['end_time']).timestamp())}:F>\n\n"
+        
+        for i, option in enumerate(vdata["options"]):
+            votes = vdata["votes"][i]
+            percentage = (votes / total_votes * 100) if total_votes > 0 else 0
+            status_text += f"{i+1}. **{option}**: {votes}票 ({percentage:.1f}%)\n"
+        
+        # 显示投票者（仅管理可见）
+        if vdata["voters"]:
+            status_text += "\n**投票详情：**\n"
+            for user_id, vote_info in vdata["voters"].items():
+                option_name = vdata["options"][vote_info["option"]]
+                status_text += f"• {vote_info['user']} → {option_name}\n"
+        
+        await interaction.response.send_message(status_text, ephemeral=True)
+        
+    except Exception as e:
+        await interaction.response.send_message(f"❌ 查看投票状态时发生错误：{e}", ephemeral=True)
+
 @bot.tree.command(name="公告", description="发送公告消息和建议提交按钮")
 async def announcement(interaction: discord.Interaction, 内容: str):
     """发送公告并添加建议提交按钮"""
