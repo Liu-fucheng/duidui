@@ -268,7 +268,7 @@ async def announcement(interaction: discord.Interaction, 内容: str):
         view = SuggestionView()
         
         # 发送公告
-        announcement_text = f"{内容}\n\n我们欢迎并感谢您对社区的建言献策，如果您有任何意见或者建议，请点击下方按钮进行提交："
+        announcement_text = f"{内容}\n\n如果您对社区的建设有任何意见或者建议，请点击下方按钮进行提交⬇️"
         
         await interaction.response.send_message(announcement_text, view=view)
         
