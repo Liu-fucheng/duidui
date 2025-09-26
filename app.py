@@ -435,8 +435,8 @@ async def create_vote(
         
         # 创建投票消息
         vote_text = f"🗳️ **{投票名称}**\n\n"
-        vote_text += f"⏰ 结束时间：<t:{int(end_time.timestamp())}:F>\n"
-        vote_text += f"👥 可投票身份组：{投票身份组}\n\n"
+        vote_text += f"结束时间：<t:{int(end_time.timestamp())}:F>\n"
+        vote_text += f"可投票身份组：{投票身份组}\n\n"
         vote_text += "请点击下方按钮进行投票："
         
         await interaction.response.send_message(vote_text, view=vote_view)
@@ -522,6 +522,61 @@ async def vote_status(interaction: discord.Interaction, 投票编号: str = None
         
     except Exception as e:
         await interaction.response.send_message(f"❌ 查看投票状态时发生错误：{e}", ephemeral=True)
+
+@bot.tree.command(name="删除投票", description="删除或提前结束投票（仅管理可用）")
+async def delete_vote(interaction: discord.Interaction, 投票编号: str, 是否公布结果: bool = True):
+    """删除投票
+    
+    参数:
+    - 投票编号: 要删除的投票编号
+    - 是否公布结果: True=公布当前结果后删除，False=直接删除不公布结果
+    """
+    try:
+        # 检查权限
+        staff_role = discord.utils.get(interaction.guild.roles, name=STAFF_ROLE_NAME)
+        if not staff_role or staff_role not in interaction.user.roles:
+            await interaction.response.send_message("❌ 权限不足：只有管理组可以删除投票！", ephemeral=True)
+            return
+        
+        # 查找投票
+        target_vote = None
+        for vid, vdata in active_votes.items():
+            if vid.endswith(投票编号) and vdata["guild_id"] == interaction.guild.id:
+                target_vote = (vid, vdata)
+                break
+        
+        if not target_vote:
+            await interaction.response.send_message(f"❌ 找不到投票编号：{投票编号}", ephemeral=True)
+            return
+        
+        vid, vdata = target_vote
+        
+        # 取消定时任务
+        if vid in vote_tasks:
+            vote_tasks[vid].cancel()
+            vote_tasks.pop(vid, None)
+        
+        if 是否公布结果:
+            # 公布结果后删除
+            await interaction.response.send_message(f"✅ 投票「{vdata['title']}」将被提前结束并公布结果...", ephemeral=True)
+            await end_vote(vid, vdata["channel_id"], vdata["guild_id"])
+            
+            # 记录日志
+            log_channel = bot.get_channel(LOG_CHANNEL_ID)
+            if log_channel:
+                await log_channel.send(f"{interaction.user.mention} 提前结束了投票：{vdata['title']}")
+        else:
+            # 直接删除不公布结果
+            active_votes.pop(vid, None)
+            await interaction.response.send_message(f"✅ 投票「{vdata['title']}」已删除，未公布结果。", ephemeral=True)
+            
+            # 记录日志
+            log_channel = bot.get_channel(LOG_CHANNEL_ID)
+            if log_channel:
+                await log_channel.send(f"{interaction.user.mention} 删除了投票（未公布结果）：{vdata['title']}")
+                
+    except Exception as e:
+        await interaction.response.send_message(f"❌ 删除投票时发生错误：{e}", ephemeral=True)
 
 @bot.tree.command(name="公告", description="发送公告消息和建议提交按钮")
 async def announcement(interaction: discord.Interaction, 内容: str):
