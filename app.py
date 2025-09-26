@@ -164,6 +164,7 @@ async def _schedule_member_check(member: discord.Member, delay_seconds: int):
 async def on_ready():
     print(f'机器人已登录，用户名为: {bot.user}')
     bot.add_view(DeleteTicketView())
+    bot.add_view(SuggestionView())
     try:
         synced = await bot.tree.sync()
         print(f"成功同步 {len(synced)} 条斜杠命令。")
@@ -196,7 +197,91 @@ async def on_ready():
     except Exception as e:
         print(f"启动检查时发生错误: {e}")
 
+# --- 建议提交按钮视图 ---
+class SuggestionView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="提交建议", style=discord.ButtonStyle.primary, custom_id="submit_suggestion")
+    async def submit_suggestion_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            # 生成建议频道名称
+            user_id = interaction.user.id
+            channel_name = f"建议-{user_id}"
+            
+            # 检查是否已存在该用户的建议频道
+            existing_channel = discord.utils.get(interaction.guild.channels, name=channel_name)
+            if existing_channel:
+                await interaction.response.send_message("您已经有一个进行中的建议频道了！", ephemeral=True)
+                return
+            
+            # 获取管理组角色
+            staff_role = discord.utils.get(interaction.guild.roles, name=STAFF_ROLE_NAME)
+            if not staff_role:
+                await interaction.response.send_message("❌ 错误：找不到管理组角色！", ephemeral=True)
+                return
+            
+            # 创建私密频道
+            overwrites = {
+                interaction.guild.default_role: discord.PermissionOverwrite(read_messages=False),
+                interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+                staff_role: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+                interaction.guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
+            }
+            
+            suggestion_channel = await interaction.guild.create_text_channel(
+                name=channel_name,
+                overwrites=overwrites,
+                reason=f"用户 {interaction.user} 提交建议"
+            )
+            
+            # 发送欢迎消息
+            welcome_message = f"{interaction.user.mention} 您好！这是只有您与管理能看到的私密频道。非常感谢您对堆堆demo的建言献策！您对社区建设有任何的意见或者建议都可以在这个频道内直接表达，管理在上线后会赶到与您进行讨论。{staff_role.mention}"
+            await suggestion_channel.send(welcome_message)
+            
+            # 回复用户
+            await interaction.response.send_message(f"✅ 建议频道已创建：{suggestion_channel.mention}", ephemeral=True)
+            
+            # 记录日志
+            log_channel = bot.get_channel(LOG_CHANNEL_ID)
+            if log_channel:
+                await log_channel.send(f"📝 用户 {interaction.user.mention} 创建了建议频道：{suggestion_channel.mention}")
+                
+        except Exception as e:
+            await interaction.response.send_message(f"❌ 创建建议频道时发生错误：{e}", ephemeral=True)
+
 # --- 斜杠命令 ---
+@bot.tree.command(name="公告", description="发送公告消息和建议提交按钮")
+async def announcement(interaction: discord.Interaction, 内容: str):
+    """发送公告并添加建议提交按钮"""
+    try:
+        # 检查权限
+        staff_role = discord.utils.get(interaction.guild.roles, name=STAFF_ROLE_NAME)
+        if not staff_role or staff_role not in interaction.user.roles:
+            await interaction.response.send_message("❌ 权限不足：只有管理组可以使用此命令！", ephemeral=True)
+            return
+        
+        # 创建建议提交按钮
+        view = SuggestionView()
+        
+        # 发送公告
+        announcement_embed = discord.Embed(
+            title="📢 服务器公告",
+            description=内容,
+            color=0x00ff00
+        )
+        announcement_embed.set_footer(text="点击下方按钮提交您的建议")
+        
+        await interaction.response.send_message(embed=announcement_embed, view=view)
+        
+        # 记录日志
+        log_channel = bot.get_channel(LOG_CHANNEL_ID)
+        if log_channel:
+            await log_channel.send(f"📢 管理员 {interaction.user.mention} 发布了公告")
+            
+    except Exception as e:
+        await interaction.response.send_message(f"❌ 发送公告时发生错误：{e}", ephemeral=True)
+
 @bot.tree.command(name="回顶", description="回到当前帖子或讨论串的顶部")
 async def top(interaction: discord.Interaction):
     # 1. 检查是否为特殊频道
