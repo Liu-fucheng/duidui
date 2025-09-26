@@ -313,12 +313,20 @@ async def on_ready():
         print(f"启动检查时发生错误: {e}")
 
 # --- 建议提交按钮视图 ---
-class SuggestionView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
+class ConfirmSuggestionView(discord.ui.View):
+    def __init__(self, original_interaction):
+        super().__init__(timeout=300)  # 5分钟超时
+        self.original_interaction = original_interaction
 
-    @discord.ui.button(label="提交建议", style=discord.ButtonStyle.primary, custom_id="submit_suggestion")
-    async def submit_suggestion_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="确认提交", style=discord.ButtonStyle.success, custom_id="confirm_suggestion")
+    async def confirm_suggestion(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.create_suggestion_channel(interaction)
+    
+    @discord.ui.button(label="取消", style=discord.ButtonStyle.secondary, custom_id="cancel_suggestion")
+    async def cancel_suggestion(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("❌ 已取消提交建议。", ephemeral=True)
+    
+    async def create_suggestion_channel(self, interaction: discord.Interaction):
         try:
             # 获取建议分类
             suggestion_category = interaction.guild.get_channel(SUGGESTION_CATEGORY_ID)
@@ -326,9 +334,19 @@ class SuggestionView(discord.ui.View):
                 await interaction.response.send_message("❌ 错误：找不到建议分类！", ephemeral=True)
                 return
             
-            # 计算下一个建议编号
+            # 计算下一个建议编号（基于历史最大编号+1，避免重名）
             existing_suggestions = [ch for ch in suggestion_category.channels if ch.name.startswith("建议-")]
-            next_number = len(existing_suggestions) + 1
+            max_number = 0
+            for ch in existing_suggestions:
+                try:
+                    # 提取频道名中的数字
+                    number_str = ch.name.replace("建议-", "")
+                    number = int(number_str)
+                    max_number = max(max_number, number)
+                except ValueError:
+                    continue
+            
+            next_number = max_number + 1
             channel_name = f"建议-{next_number:04d}"
             
             # 获取管理组角色
@@ -367,6 +385,20 @@ class SuggestionView(discord.ui.View):
                 
         except Exception as e:
             await interaction.response.send_message(f"❌ 创建建议频道时发生错误：{e}", ephemeral=True)
+
+class SuggestionView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="提交建议", style=discord.ButtonStyle.primary, custom_id="submit_suggestion")
+    async def submit_suggestion_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # 显示确认对话框
+        confirm_view = ConfirmSuggestionView(interaction)
+        await interaction.response.send_message(
+            "💡 **确认提交建议**\n\n您确定要创建建议频道吗？\n创建后将生成一个只有您和管理组可见的私密频道。", 
+            view=confirm_view, 
+            ephemeral=True
+        )
 
 # --- 斜杠命令 ---
 @bot.tree.command(name="投票", description="创建一个新的投票")
@@ -603,6 +635,79 @@ async def announcement(interaction: discord.Interaction, 内容: str):
             
     except Exception as e:
         await interaction.response.send_message(f"❌ 发送公告时发生错误：{e}", ephemeral=True)
+
+@bot.tree.command(name="编辑公告", description="编辑已发送的公告消息")
+async def edit_announcement(interaction: discord.Interaction, 消息ID: str, 新内容: str):
+    """编辑公告消息"""
+    try:
+        # 检查权限
+        staff_role = discord.utils.get(interaction.guild.roles, name=STAFF_ROLE_NAME)
+        if not staff_role or staff_role not in interaction.user.roles:
+            await interaction.response.send_message("❌ 权限不足：只有管理组可以编辑公告！", ephemeral=True)
+            return
+        
+        # 获取消息
+        try:
+            message_id = int(消息ID)
+            message = await interaction.channel.fetch_message(message_id)
+        except (ValueError, discord.NotFound):
+            await interaction.response.send_message("❌ 找不到指定的消息ID！", ephemeral=True)
+            return
+        
+        # 检查是否为机器人发送的消息
+        if message.author != bot.user:
+            await interaction.response.send_message("❌ 只能编辑机器人发送的消息！", ephemeral=True)
+            return
+        
+        # 编辑消息
+        new_text = f"{新内容}\n\n🔴 如果您有任何意见或者建议，请点击下方按钮进行提交 ⬇️"
+        view = SuggestionView()
+        
+        await message.edit(content=new_text, view=view)
+        await interaction.response.send_message(f"✅ 公告已更新！", ephemeral=True)
+        
+        # 记录日志
+        log_channel = bot.get_channel(LOG_CHANNEL_ID)
+        if log_channel:
+            await log_channel.send(f"{interaction.user.mention} 编辑了公告消息 (ID: {消息ID})")
+            
+    except Exception as e:
+        await interaction.response.send_message(f"❌ 编辑公告时发生错误：{e}", ephemeral=True)
+
+@bot.tree.command(name="删除公告", description="删除已发送的公告消息")
+async def delete_announcement(interaction: discord.Interaction, 消息ID: str):
+    """删除公告消息"""
+    try:
+        # 检查权限
+        staff_role = discord.utils.get(interaction.guild.roles, name=STAFF_ROLE_NAME)
+        if not staff_role or staff_role not in interaction.user.roles:
+            await interaction.response.send_message("❌ 权限不足：只有管理组可以删除公告！", ephemeral=True)
+            return
+        
+        # 获取消息
+        try:
+            message_id = int(消息ID)
+            message = await interaction.channel.fetch_message(message_id)
+        except (ValueError, discord.NotFound):
+            await interaction.response.send_message("❌ 找不到指定的消息ID！", ephemeral=True)
+            return
+        
+        # 检查是否为机器人发送的消息
+        if message.author != bot.user:
+            await interaction.response.send_message("❌ 只能删除机器人发送的消息！", ephemeral=True)
+            return
+        
+        # 删除消息
+        await message.delete()
+        await interaction.response.send_message(f"✅ 公告已删除！", ephemeral=True)
+        
+        # 记录日志
+        log_channel = bot.get_channel(LOG_CHANNEL_ID)
+        if log_channel:
+            await log_channel.send(f"{interaction.user.mention} 删除了公告消息 (ID: {消息ID})")
+            
+    except Exception as e:
+        await interaction.response.send_message(f"❌ 删除公告时发生错误：{e}", ephemeral=True)
 
 @bot.tree.command(name="回顶", description="回到当前帖子或讨论串的顶部")
 async def top(interaction: discord.Interaction):
