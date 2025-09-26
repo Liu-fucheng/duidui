@@ -248,7 +248,7 @@ class SuggestionView(discord.ui.View):
             # 记录日志
             log_channel = bot.get_channel(LOG_CHANNEL_ID)
             if log_channel:
-                await log_channel.send(f"📝 用户 {interaction.user.mention} 创建了建议频道：{suggestion_channel.mention}")
+                await log_channel.send(f"{interaction.user.mention} 创建了建议频道：{suggestion_channel.mention}")
                 
         except Exception as e:
             await interaction.response.send_message(f"❌ 创建建议频道时发生错误：{e}", ephemeral=True)
@@ -268,14 +268,14 @@ async def announcement(interaction: discord.Interaction, 内容: str):
         view = SuggestionView()
         
         # 发送公告
-        announcement_text = f"📢 **服务器公告**\n\n{内容}\n\n点击下方按钮提交您的建议"
+        announcement_text = f"{内容}\n\n⭕如果您有任何意见或者建议，请点击下方按钮进行提交 ⬇️"
         
         await interaction.response.send_message(announcement_text, view=view)
         
         # 记录日志
         log_channel = bot.get_channel(LOG_CHANNEL_ID)
         if log_channel:
-            await log_channel.send(f"📢 管理员 {interaction.user.mention} 发布了公告")
+            await log_channel.send(f"{interaction.user.mention} 发布了公告")
             
     except Exception as e:
         await interaction.response.send_message(f"❌ 发送公告时发生错误：{e}", ephemeral=True)
