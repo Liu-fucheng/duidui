@@ -168,20 +168,41 @@ async def save_to_cloudflare_kv(data):
 async def load_from_cloudflare_kv():
     """从 Cloudflare KV 加载"""
     if not all([CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_NAMESPACE_ID, CLOUDFLARE_API_TOKEN]):
+        print("❌ Cloudflare KV 配置不完整")
+        print(f"  - CLOUDFLARE_ACCOUNT_ID: {'✅' if CLOUDFLARE_ACCOUNT_ID else '❌'}")
+        print(f"  - CLOUDFLARE_NAMESPACE_ID: {'✅' if CLOUDFLARE_NAMESPACE_ID else '❌'}")
+        print(f"  - CLOUDFLARE_API_TOKEN: {'✅' if CLOUDFLARE_API_TOKEN else '❌'}")
         return {}
     
+    # 正确的 Cloudflare KV API 格式
     url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/{CLOUDFLARE_NAMESPACE_ID}/values/votes_data"
-    headers = {"Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}"}
+    headers = {
+        "Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    
+    print(f"请求 URL: {url}")
+    print(f"Account ID: {CLOUDFLARE_ACCOUNT_ID}")
+    print(f"Namespace ID: {CLOUDFLARE_NAMESPACE_ID}")
     
     async with aiohttp.ClientSession() as session:
         async with session.get(url, headers=headers) as response:
+            print(f"Cloudflare KV 响应状态: {response.status}")
+            
             if response.status == 200:
-                data = await response.json()
+                # Cloudflare KV 返回的是原始文本，需要解析 JSON
+                text_data = await response.text()
+                print(f"原始响应: {text_data[:200]}...")
+                data = json.loads(text_data)
+                print(f"成功加载数据，包含 {len(data.get('active_votes', {}))} 个投票")
                 return data.get("active_votes", {})
             elif response.status == 404:
+                print("数据不存在于 Cloudflare KV")
                 return {}  # 数据不存在
             else:
-                raise Exception(f"Cloudflare KV 加载失败: {response.status}")
+                error_text = await response.text()
+                print(f"Cloudflare KV 错误响应: {error_text}")
+                raise Exception(f"Cloudflare KV 加载失败: {response.status} - {error_text}")
 
 async def save_to_github(data):
     """保存到 GitHub"""
