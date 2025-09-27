@@ -87,6 +87,54 @@ class DeleteSuggestionView(discord.ui.View):
 # 存储活跃的投票
 active_votes = {}
 vote_tasks = {}
+VOTES_DATA_FILE = "votes_data.json"
+
+def save_votes_data():
+    """保存投票数据到文件"""
+    try:
+        data = {
+            "active_votes": active_votes,
+            "timestamp": datetime.now().isoformat()
+        }
+        with open(VOTES_DATA_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"保存投票数据失败: {e}")
+
+def load_votes_data():
+    """从文件加载投票数据"""
+    try:
+        if os.path.exists(VOTES_DATA_FILE):
+            with open(VOTES_DATA_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return data.get("active_votes", {})
+    except Exception as e:
+        print(f"加载投票数据失败: {e}")
+    return {}
+
+async def restore_vote_tasks():
+    """恢复投票定时任务"""
+    try:
+        for vote_id, vote_data in active_votes.items():
+            end_time = datetime.fromisoformat(vote_data["end_time"])
+            now = datetime.now()
+            
+            if end_time <= now:
+                # 投票已过期，立即结束
+                await end_vote(vote_id, vote_data["channel_id"], vote_data["guild_id"])
+            else:
+                # 重新安排定时任务
+                remaining_seconds = (end_time - now).total_seconds()
+                
+                async def end_vote_task(vid=vote_id, channel_id=vote_data["channel_id"], guild_id=vote_data["guild_id"]):
+                    await asyncio.sleep(remaining_seconds)
+                    await end_vote(vid, channel_id, guild_id)
+                
+                task = asyncio.create_task(end_vote_task())
+                vote_tasks[vote_id] = task
+                print(f"恢复投票任务: {vote_data['title']} (剩余 {remaining_seconds/3600:.1f} 小时)")
+    except Exception as e:
+        print(f"恢复投票任务失败: {e}")
 
 class VoteView(discord.ui.View):
     def __init__(self, vote_id: str, options: list, allowed_role: str, end_time: datetime):
@@ -136,6 +184,9 @@ class VoteView(discord.ui.View):
                 "time": datetime.now().isoformat()
             }
             
+            # 保存到文件
+            save_votes_data()
+            
             await interaction.response.send_message(f"✅ 您的投票已记录：{self.options[option_index]}", ephemeral=True)
         
         return vote_callback
@@ -174,6 +225,9 @@ async def end_vote(vote_id: str, channel_id: int, guild_id: int):
         # 清理数据
         active_votes.pop(vote_id, None)
         vote_tasks.pop(vote_id, None)
+        
+        # 保存到文件
+        save_votes_data()
         
     except Exception as e:
         print(f"结束投票时发生错误: {e}")
@@ -276,7 +330,16 @@ async def _schedule_member_check(member: discord.Member, delay_seconds: int):
 # --- Bot 事件 ---
 @bot.event
 async def on_ready():
+    global active_votes
     print(f'机器人已登录，用户名为: {bot.user}')
+    
+    # 加载投票数据
+    active_votes = load_votes_data()
+    print(f"加载了 {len(active_votes)} 个投票数据")
+    
+    # 恢复投票任务
+    await restore_vote_tasks()
+    
     bot.add_view(DeleteTicketView())
     bot.add_view(SuggestionView())
     bot.add_view(DeleteSuggestionView())
@@ -481,6 +544,9 @@ async def create_vote(
         task = asyncio.create_task(end_vote_task())
         vote_tasks[vote_id] = task
         
+        # 保存到文件
+        save_votes_data()
+        
         # 记录日志
         log_channel = bot.get_channel(LOG_CHANNEL_ID)
         if log_channel:
@@ -606,6 +672,9 @@ async def delete_vote(interaction: discord.Interaction, 投票编号: str, 是�
             log_channel = bot.get_channel(LOG_CHANNEL_ID)
             if log_channel:
                 await log_channel.send(f"{interaction.user.mention} 删除了投票（未公布结果）：{vdata['title']}")
+        
+        # 保存到文件
+        save_votes_data()
                 
     except Exception as e:
         await interaction.response.send_message(f"❌ 删除投票时发生错误：{e}", ephemeral=True)
@@ -708,6 +777,29 @@ async def delete_announcement(interaction: discord.Interaction, 消息ID: str):
             
     except Exception as e:
         await interaction.response.send_message(f"❌ 删除公告时发生错误：{e}", ephemeral=True)
+
+@bot.tree.command(name="同步命令", description="强制同步斜杠命令（仅管理可用）")
+async def sync_commands(interaction: discord.Interaction):
+    """强制同步命令"""
+    try:
+        # 检查权限
+        staff_role = discord.utils.get(interaction.guild.roles, name=STAFF_ROLE_NAME)
+        if not staff_role or staff_role not in interaction.user.roles:
+            await interaction.response.send_message("❌ 权限不足：只有管理组可以同步命令！", ephemeral=True)
+            return
+        
+        await interaction.response.send_message("🔄 正在同步命令...", ephemeral=True)
+        
+        synced = await bot.tree.sync()
+        await interaction.edit_original_response(content=f"✅ 成功同步 {len(synced)} 条斜杠命令！")
+        
+        # 记录日志
+        log_channel = bot.get_channel(LOG_CHANNEL_ID)
+        if log_channel:
+            await log_channel.send(f"{interaction.user.mention} 手动同步了 {len(synced)} 条斜杠命令")
+            
+    except Exception as e:
+        await interaction.edit_original_response(content=f"❌ 同步命令时发生错误：{e}")
 
 @bot.tree.command(name="回顶", description="回到当前帖子或讨论串的顶部")
 async def top(interaction: discord.Interaction):
