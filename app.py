@@ -125,18 +125,28 @@ async def save_votes_data():
 async def load_votes_data():
     """加载投票数据"""
     try:
+        print(f"使用存储类型: {STORAGE_TYPE}")
+        
         if STORAGE_TYPE == "cloudflare_kv":
+            print("从 Cloudflare KV 加载数据...")
             return await load_from_cloudflare_kv()
         elif STORAGE_TYPE == "github":
+            print("从 GitHub 加载数据...")
             return await load_from_github()
         else:
             # 默认从本地文件加载
+            print("从本地文件加载数据...")
             if os.path.exists(VOTES_DATA_FILE):
+                print(f"找到数据文件: {VOTES_DATA_FILE}")
                 with open(VOTES_DATA_FILE, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     return data.get("active_votes", {})
+            else:
+                print(f"数据文件不存在: {VOTES_DATA_FILE}")
     except Exception as e:
         print(f"加载投票数据失败: {e}")
+        import traceback
+        traceback.print_exc()
     return {}
 
 async def save_to_cloudflare_kv(data):
@@ -447,8 +457,16 @@ async def on_ready():
     print(f'机器人已登录，用户名为: {bot.user}')
     
     # 加载投票数据
+    print("正在加载投票数据...")
     active_votes = await load_votes_data()
     print(f"加载了 {len(active_votes)} 个投票数据")
+    
+    if active_votes:
+        print("活跃投票列表:")
+        for vote_id, vote_data in active_votes.items():
+            print(f"  - {vote_data['title']} (ID: {vote_id[-10:]})")
+    else:
+        print("没有找到活跃投票数据")
     
     # 恢复投票任务
     await restore_vote_tasks()
