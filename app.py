@@ -7,6 +7,7 @@ from flask import Flask
 from threading import Thread
 from datetime import datetime, timedelta
 import json
+import aiohttp
 
 # --- Flask Web Server (用于保活) ---
 # 创建一个 Flask 应用实例
@@ -87,30 +88,142 @@ class DeleteSuggestionView(discord.ui.View):
 # 存储活跃的投票
 active_votes = {}
 vote_tasks = {}
+# 存储配置 - 可选择不同的存储方式
+STORAGE_TYPE = os.getenv("STORAGE_TYPE", "file")  # file, cloudflare_kv, github
 VOTES_DATA_FILE = "votes_data.json"
 
-def save_votes_data():
-    """保存投票数据到文件"""
+# Cloudflare KV 配置
+CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID")
+CLOUDFLARE_NAMESPACE_ID = os.getenv("CLOUDFLARE_NAMESPACE_ID") 
+CLOUDFLARE_API_TOKEN = os.getenv("CLOUDFLARE_API_TOKEN")
+
+# GitHub 存储配置
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+GITHUB_REPO = os.getenv("GITHUB_REPO")  # 格式: username/repo
+GITHUB_FILE_PATH = "votes_data.json"
+
+async def save_votes_data():
+    """保存投票数据"""
     try:
         data = {
             "active_votes": active_votes,
             "timestamp": datetime.now().isoformat()
         }
-        with open(VOTES_DATA_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        
+        if STORAGE_TYPE == "cloudflare_kv":
+            await save_to_cloudflare_kv(data)
+        elif STORAGE_TYPE == "github":
+            await save_to_github(data)
+        else:
+            # 默认保存到本地文件
+            with open(VOTES_DATA_FILE, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+                
     except Exception as e:
         print(f"保存投票数据失败: {e}")
 
-def load_votes_data():
-    """从文件加载投票数据"""
+async def load_votes_data():
+    """加载投票数据"""
     try:
-        if os.path.exists(VOTES_DATA_FILE):
-            with open(VOTES_DATA_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                return data.get("active_votes", {})
+        if STORAGE_TYPE == "cloudflare_kv":
+            return await load_from_cloudflare_kv()
+        elif STORAGE_TYPE == "github":
+            return await load_from_github()
+        else:
+            # 默认从本地文件加载
+            if os.path.exists(VOTES_DATA_FILE):
+                with open(VOTES_DATA_FILE, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    return data.get("active_votes", {})
     except Exception as e:
         print(f"加载投票数据失败: {e}")
     return {}
+
+async def save_to_cloudflare_kv(data):
+    """保存到 Cloudflare KV"""
+    if not all([CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_NAMESPACE_ID, CLOUDFLARE_API_TOKEN]):
+        raise Exception("Cloudflare KV 配置不完整")
+    
+    url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/{CLOUDFLARE_NAMESPACE_ID}/values/votes_data"
+    headers = {
+        "Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.put(url, headers=headers, json=data) as response:
+            if response.status != 200:
+                raise Exception(f"Cloudflare KV 保存失败: {response.status}")
+
+async def load_from_cloudflare_kv():
+    """从 Cloudflare KV 加载"""
+    if not all([CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_NAMESPACE_ID, CLOUDFLARE_API_TOKEN]):
+        return {}
+    
+    url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/{CLOUDFLARE_NAMESPACE_ID}/values/votes_data"
+    headers = {"Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}"}
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, headers=headers) as response:
+            if response.status == 200:
+                data = await response.json()
+                return data.get("active_votes", {})
+            elif response.status == 404:
+                return {}  # 数据不存在
+            else:
+                raise Exception(f"Cloudflare KV 加载失败: {response.status}")
+
+async def save_to_github(data):
+    """保存到 GitHub"""
+    if not all([GITHUB_TOKEN, GITHUB_REPO]):
+        raise Exception("GitHub 配置不完整")
+    
+    # 先获取文件的 SHA（如果存在）
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE_PATH}"
+    headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+    
+    sha = None
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, headers=headers) as response:
+            if response.status == 200:
+                file_data = await response.json()
+                sha = file_data["sha"]
+        
+        # 更新或创建文件
+        import base64
+        content = base64.b64encode(json.dumps(data, ensure_ascii=False, indent=2).encode()).decode()
+        
+        payload = {
+            "message": f"Update votes data - {datetime.now().isoformat()}",
+            "content": content
+        }
+        if sha:
+            payload["sha"] = sha
+        
+        async with session.put(url, headers=headers, json=payload) as response:
+            if response.status not in [200, 201]:
+                raise Exception(f"GitHub 保存失败: {response.status}")
+
+async def load_from_github():
+    """从 GitHub 加载"""
+    if not all([GITHUB_TOKEN, GITHUB_REPO]):
+        return {}
+    
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE_PATH}"
+    headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, headers=headers) as response:
+            if response.status == 200:
+                file_data = await response.json()
+                import base64
+                content = base64.b64decode(file_data["content"]).decode()
+                data = json.loads(content)
+                return data.get("active_votes", {})
+            elif response.status == 404:
+                return {}
+            else:
+                raise Exception(f"GitHub 加载失败: {response.status}")
 
 async def restore_vote_tasks():
     """恢复投票定时任务"""
@@ -184,8 +297,8 @@ class VoteView(discord.ui.View):
                 "time": datetime.now().isoformat()
             }
             
-            # 保存到文件
-            save_votes_data()
+            # 保存到存储
+            await save_votes_data()
             
             await interaction.response.send_message(f"✅ 您的投票已记录：{self.options[option_index]}", ephemeral=True)
         
@@ -226,8 +339,8 @@ async def end_vote(vote_id: str, channel_id: int, guild_id: int):
         active_votes.pop(vote_id, None)
         vote_tasks.pop(vote_id, None)
         
-        # 保存到文件
-        save_votes_data()
+        # 保存到存储
+        await save_votes_data()
         
     except Exception as e:
         print(f"结束投票时发生错误: {e}")
@@ -334,7 +447,7 @@ async def on_ready():
     print(f'机器人已登录，用户名为: {bot.user}')
     
     # 加载投票数据
-    active_votes = load_votes_data()
+    active_votes = await load_votes_data()
     print(f"加载了 {len(active_votes)} 个投票数据")
     
     # 恢复投票任务
@@ -544,8 +657,8 @@ async def create_vote(
         task = asyncio.create_task(end_vote_task())
         vote_tasks[vote_id] = task
         
-        # 保存到文件
-        save_votes_data()
+        # 保存到存储
+        await save_votes_data()
         
         # 记录日志
         log_channel = bot.get_channel(LOG_CHANNEL_ID)
@@ -673,8 +786,8 @@ async def delete_vote(interaction: discord.Interaction, 投票编号: str, 是�
             if log_channel:
                 await log_channel.send(f"{interaction.user.mention} 删除了投票（未公布结果）：{vdata['title']}")
         
-        # 保存到文件
-        save_votes_data()
+        # 保存到存储
+        await save_votes_data()
                 
     except Exception as e:
         await interaction.response.send_message(f"❌ 删除投票时发生错误：{e}", ephemeral=True)
