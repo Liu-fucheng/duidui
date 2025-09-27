@@ -824,7 +824,7 @@ async def announcement(interaction: discord.Interaction, 内容: str):
         await interaction.response.send_message(f"❌ 发送公告时发生错误：{e}", ephemeral=True)
 
 @bot.tree.command(name="编辑公告", description="编辑已发送的公告消息")
-async def edit_announcement(interaction: discord.Interaction, 消息ID: str, 新内容: str):
+async def edit_announcement(interaction: discord.Interaction, message_id: str, new_content: str):
     """编辑公告消息"""
     try:
         # 检查权限
@@ -835,8 +835,8 @@ async def edit_announcement(interaction: discord.Interaction, 消息ID: str, 新
         
         # 获取消息
         try:
-            message_id = int(消息ID)
-            message = await interaction.channel.fetch_message(message_id)
+            message_id_int = int(message_id)
+            message = await interaction.channel.fetch_message(message_id_int)
         except (ValueError, discord.NotFound):
             await interaction.response.send_message("❌ 找不到指定的消息ID！", ephemeral=True)
             return
@@ -847,7 +847,7 @@ async def edit_announcement(interaction: discord.Interaction, 消息ID: str, 新
             return
         
         # 编辑消息
-        new_text = f"{新内容}\n\n🔴 如果您有任何意见或者建议，请点击下方按钮进行提交 ⬇️"
+        new_text = f"{new_content}\n\n🔴 如果您有任何意见或者建议，请点击下方按钮进行提交 ⬇️"
         view = SuggestionView()
         
         await message.edit(content=new_text, view=view)
@@ -856,13 +856,13 @@ async def edit_announcement(interaction: discord.Interaction, 消息ID: str, 新
         # 记录日志
         log_channel = bot.get_channel(LOG_CHANNEL_ID)
         if log_channel:
-            await log_channel.send(f"{interaction.user.mention} 编辑了公告消息 (ID: {消息ID})")
+            await log_channel.send(f"{interaction.user.mention} 编辑了公告消息 (ID: {message_id})")
             
     except Exception as e:
         await interaction.response.send_message(f"❌ 编辑公告时发生错误：{e}", ephemeral=True)
 
 @bot.tree.command(name="删除公告", description="删除已发送的公告消息")
-async def delete_announcement(interaction: discord.Interaction, 消息ID: str):
+async def delete_announcement(interaction: discord.Interaction, message_id: str):
     """删除公告消息"""
     try:
         # 检查权限
@@ -873,8 +873,8 @@ async def delete_announcement(interaction: discord.Interaction, 消息ID: str):
         
         # 获取消息
         try:
-            message_id = int(消息ID)
-            message = await interaction.channel.fetch_message(message_id)
+            message_id_int = int(message_id)
+            message = await interaction.channel.fetch_message(message_id_int)
         except (ValueError, discord.NotFound):
             await interaction.response.send_message("❌ 找不到指定的消息ID！", ephemeral=True)
             return
@@ -891,7 +891,7 @@ async def delete_announcement(interaction: discord.Interaction, 消息ID: str):
         # 记录日志
         log_channel = bot.get_channel(LOG_CHANNEL_ID)
         if log_channel:
-            await log_channel.send(f"{interaction.user.mention} 删除了公告消息 (ID: {消息ID})")
+            await log_channel.send(f"{interaction.user.mention} 删除了公告消息 (ID: {message_id})")
             
     except Exception as e:
         await interaction.response.send_message(f"❌ 删除公告时发生错误：{e}", ephemeral=True)
