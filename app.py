@@ -727,14 +727,60 @@ async def vote_status(interaction: discord.Interaction, 投票编号: str = None
             percentage = (votes / total_votes * 100) if total_votes > 0 else 0
             status_text += f"{i+1}. **{option}**: {votes}票 ({percentage:.1f}%)\n"
         
-        # 显示投票者（仅管理可见）
+        # 显示投票者（仅管理可见，按选项分组显示最后10个）
         if vdata["voters"]:
             status_text += "\n**投票详情：**\n"
+            
+            # 按选项分组收集投票者
+            option_voters = {}
             for user_id, vote_info in vdata["voters"].items():
-                option_name = vdata["options"][vote_info["option"]]
-                status_text += f"• {vote_info['user']} → {option_name}\n"
+                option_index = vote_info["option"]
+                if option_index not in option_voters:
+                    option_voters[option_index] = []
+                option_voters[option_index].append(vote_info)
+            
+            # 为每个选项显示最后10个投票者
+            for i, option in enumerate(vdata["options"]):
+                if i in option_voters:
+                    voters = option_voters[i]
+                    # 按时间排序，取最后10个
+                    voters.sort(key=lambda x: x.get('time', ''), reverse=True)
+                    recent_voters = voters[:10]
+                    
+                    status_text += f"\n**{option}** (最后10个投票者):\n"
+                    if recent_voters:
+                        for vote_info in recent_voters:
+                            user_name = vote_info['user'][:15] + "..." if len(vote_info['user']) > 15 else vote_info['user']
+                            status_text += f"• {user_name}\n"
+                    else:
+                        status_text += "• 暂无投票者\n"
         
-        await interaction.response.send_message(status_text, ephemeral=True)
+        # 检查消息长度，如果超过1900字符就分割
+        if len(status_text) > 1900:
+            # 分割消息
+            lines = status_text.split('\n')
+            current_message = ""
+            message_count = 0
+            
+            for line in lines:
+                if len(current_message + line + '\n') > 1900:
+                    if message_count == 0:
+                        await interaction.response.send_message(current_message, ephemeral=True)
+                    else:
+                        await interaction.followup.send(current_message, ephemeral=True)
+                    current_message = line + '\n'
+                    message_count += 1
+                else:
+                    current_message += line + '\n'
+            
+            # 发送最后一部分
+            if current_message.strip():
+                if message_count == 0:
+                    await interaction.response.send_message(current_message, ephemeral=True)
+                else:
+                    await interaction.followup.send(current_message, ephemeral=True)
+        else:
+            await interaction.response.send_message(status_text, ephemeral=True)
         
     except Exception as e:
         await interaction.response.send_message(f"❌ 查看投票状态时发生错误：{e}", ephemeral=True)
