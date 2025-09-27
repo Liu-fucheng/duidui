@@ -457,10 +457,15 @@ async def on_ready():
     bot.add_view(SuggestionView())
     bot.add_view(DeleteSuggestionView())
     try:
+        print("开始同步斜杠命令...")
         synced = await bot.tree.sync()
         print(f"成功同步 {len(synced)} 条斜杠命令。")
+        for cmd in synced:
+            print(f"  - {cmd.name}: {cmd.description}")
     except Exception as e:
         print(f"同步命令时发生错误: {e}")
+        import traceback
+        traceback.print_exc()
 
     # 启动时对现有成员做一次排查与调度
     try:
@@ -914,6 +919,11 @@ async def sync_commands(interaction: discord.Interaction):
     except Exception as e:
         await interaction.edit_original_response(content=f"❌ 同步命令时发生错误：{e}")
 
+@bot.tree.command(name="测试", description="测试命令是否正常工作")
+async def test_command(interaction: discord.Interaction):
+    """测试命令"""
+    await interaction.response.send_message("✅ 测试命令正常工作！", ephemeral=True)
+
 @bot.tree.command(name="回顶", description="回到当前帖子或讨论串的顶部")
 async def top(interaction: discord.Interaction):
     # 1. 检查是否为特殊频道
@@ -1040,14 +1050,37 @@ async def on_message(message):
 
 # --- 运行 Bot ---
 if __name__ == "__main__":
+    print("=== 机器人启动中 ===")
+    
+    # 检查环境变量
+    bot_token = os.getenv("DISCORD_TOKEN")
+    if bot_token is None:
+        print("❌ 错误：未找到 DISCORD_TOKEN 环境变量")
+        print("请在 Render 中设置 DISCORD_TOKEN")
+        exit(1)
+    else:
+        print("✅ 找到 DISCORD_TOKEN")
+    
+    # 检查存储配置
+    storage_type = os.getenv("STORAGE_TYPE", "file")
+    print(f"📦 存储类型: {storage_type}")
+    
+    if storage_type == "cloudflare_kv":
+        required_vars = ["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_NAMESPACE_ID", "CLOUDFLARE_API_TOKEN"]
+        missing = [var for var in required_vars if not os.getenv(var)]
+        if missing:
+            print(f"⚠️ 警告：Cloudflare KV 配置不完整，缺少: {', '.join(missing)}")
+    
     # 创建并启动 Flask 服务器线程
-    # 这样 Flask 服务器就不会阻塞我们的机器人运行
+    print("🌐 启动 Flask 服务器...")
     flask_thread = Thread(target=run_flask)
     flask_thread.start()
 
     # 运行机器人
-    bot_token = os.getenv("DISCORD_TOKEN")
-    if bot_token is None:
-        print("错误：未找到 DISCORD_TOKEN。")
-    else:
+    print("🤖 启动 Discord 机器人...")
+    try:
         bot.run(bot_token)
+    except Exception as e:
+        print(f"❌ 机器人启动失败: {e}")
+        import traceback
+        traceback.print_exc()
